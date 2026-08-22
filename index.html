@@ -2,73 +2,98 @@
 <html>
 <head>
     <meta charset="utf-8">
-    <title>Browser inference demo</title>
-
+    <title>Voice Controlled ESP32 via Blynk</title>
     <style>
-        #features {
-            width: 50%;
-            font-size: 18px;
-        }
-
-        #results {
-            font-family: monospace;
-            white-space: pre;
-        }
+        body { font-family: sans-serif; padding: 20px; max-width: 600px; margin: auto; }
+        button { padding: 15px 30px; font-size: 18px; cursor: pointer; margin-bottom: 20px; }
+        #status { font-weight: bold; color: blue; }
+        #results { font-family: monospace; white-space: pre; background: #eee; padding: 10px; }
     </style>
 </head>
 <body>
-    <h1></h1>
+    <h1 id="model-info">Loading Model...</h1>
+    
+    <button id="start-btn">Start Listening</button>
+    <p>Status: <span id="status">Waiting to start...</span></p>
+    <p id="results">Predictions will appear here</p>
 
-    <p>
-        <input type="text" id="features" placeholder="Paste your features here">
-    </p>
-    <p>
-        <button id="run-inference">Run inference</button>
-    </p>
-    <p id="results"></p>
-
+    <!-- Make sure these files are pushed to your GitHub repo too -->
     <script src="edge-impulse-standalone.js"></script>
     <script src="run-impulse.js"></script>
+    
     <script>
-        (async () => {
-            // Initialize the Edge Impulse classifier
-            var classifier = new EdgeImpulseClassifier();
-            await classifier.init();
+        let audioContext;
+        let processor;
+        let classifier;
+        let audioBuffer = [];
+        let isClassifying = false;
 
-            let project = classifier.getProjectInfo();
-            document.querySelector('h1').textContent = project.owner + ' / ' + project.name + ' (version ' + project.deploy_version + ')';
+        // --- BLYNK CONFIGURATION ---
+        const BLYNK_TOKEN = "YOUR_BLYNK_AUTH_TOKEN"; 
+        const BLYNK_URL = `https://blynk.cloud/external/api/update?token=${BLYNK_TOKEN}&v1=`;
 
-            document.querySelector('#run-inference').onclick = () => {
-                try {
-                    // Extract features from the input box
-                    let features = document.querySelector('#features').value.split(',').map(x => Number(x.trim()));
+        document.getElementById('start-btn').onclick = async () => {
+            const startBtn = document.getElementById('start-btn');
+            const statusText = document.getElementById('status');
+            
+            try {
+                startBtn.disabled = true;
+                statusText.textContent = "Initializing model and microphone...";
+
+                if (!classifier) {
+                    classifier = new EdgeImpulseClassifier();
+                    await classifier.init();
+                    let project = classifier.getProjectInfo();
+                    document.getElementById('model-info').textContent = `${project.owner} / ${project.name}`;
+                }
+
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+                const source = audioContext.createMediaStreamSource(stream);
+                
+                processor = audioContext.createScriptProcessor(4096, 1, 1);
+                source.connect(processor);
+                processor.connect(audioContext.destination);
+                
+                statusText.textContent = "Listening...";
+                statusText.style.color = "green";
+
+                processor.onaudioprocess = async (e) => {
+                    if (isClassifying) return;
                     
-                    // Run the classifier
-                    let res = classifier.classify(features);
-                    document.querySelector('#results').textContent = JSON.stringify(res, null, 4);
-
-                    // --- NEW ESP32 TRIGGER LOGIC ---
+                    const inputData = e.inputBuffer.getChannelData(0);
+                    for (let i = 0; i < inputData.length; i++) audioBuffer.push(inputData[i]);
                     
-                    // 1. Find the label with the highest confidence score
-                    let topResult = res.results.reduce((max, current) => (current.value > max.value) ? current : max);
-
-                    // 2. Send command to ESP32 if confidence is high enough (e.g., > 80%)
-                    let esp32_IP = "http://192.168.100.108"; // IMPORTANT: Replace with the IP from your Arduino Serial Monitor
+                    let windowSize = classifier.getProperties().input_features_count; 
                     
-                    // Note: Update "led_on" and "led_off" to exactly match the class labels in your Edge Impulse project
-                    if (topResult.label === "led_on" && topResult.value > 0.8) {
-                        console.log("Triggering LED ON");
-                        fetch(`${esp32_IP}/on`).catch(err => console.error("Error reaching ESP32:", err));
-                    } else if (topResult.label === "led_off" && topResult.value > 0.8) {
-                        console.log("Triggering LED OFF");
-                        fetch(`${esp32_IP}/off`).catch(err => console.error("Error reaching ESP32:", err));
+                    if (audioBuffer.length >= windowSize) {
+                        isClassifying = true;
+                        let features = audioBuffer.slice(0, windowSize);
+                        audioBuffer = audioBuffer.slice(inputData.length); 
+                        
+                        let res = classifier.classify(features);
+                        let topResult = res.results.reduce((max, current) => (current.value > max.value) ? current : max);
+                        
+                        document.getElementById('results').textContent = `Heard: ${topResult.label} \nConfidence: ${(topResult.value * 100).toFixed(1)}%`;
+
+                        // Trigger Blynk via REST API
+                        if (topResult.value > 0.8) {
+                            if (topResult.label === "led_on") {
+                                fetch(BLYNK_URL + '1').catch(err => console.error("Blynk Error:", err));
+                            } else if (topResult.label === "led_off") {
+                                fetch(BLYNK_URL + '0').catch(err => console.error("Blynk Error:", err));
+                            }
+                        }
+                        isClassifying = false;
                     }
-                }
-                catch (ex) {
-                    alert('Failed to classify: ' + (ex.message || ex.toString()));
-                }
-            };
-        })();
+                };
+            } catch (err) {
+                console.error(err);
+                statusText.textContent = "Error: " + err.message;
+                statusText.style.color = "red";
+                startBtn.disabled = false;
+            }
+        };
     </script>
 </body>
 </html>
