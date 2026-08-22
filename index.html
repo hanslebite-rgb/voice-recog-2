@@ -53,7 +53,7 @@
                     let topResult = res.results.reduce((max, current) => (current.value > max.value) ? current : max);
 
                     // 2. Send command to ESP32 if confidence is high enough (e.g., > 80%)
-                    let esp32_IP = "http://192.168.X.X"; // IMPORTANT: Replace with the IP from your Arduino Serial Monitor
+                    let esp32_IP = "http://192.168.100.108"; // IMPORTANT: Replace with the IP from your Arduino Serial Monitor
                     
                     // Note: Update "led_on" and "led_off" to exactly match the class labels in your Edge Impulse project
                     if (topResult.label === "led_on" && topResult.value > 0.8) {
