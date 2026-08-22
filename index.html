@@ -25,7 +25,7 @@
 
   <script>
     // ---- CONFIG: must match what you used when training ----
-    const SAMPLE_RATE_HZ = 8000;         // same value used in your ESP32 sketches
+    const SAMPLE_RATE_HZ = 16000;         // same value used in your ESP32 sketches
     
     // OPTIMIZATION 1: Lower the threshold slightly to 70% to account for phone mic variance
     const CONFIDENCE_THRESHOLD = 0.70;
@@ -122,7 +122,7 @@
 
         // We completely removed the custom resampler. The browser now handles it natively.
         for (let i = 0; i < input.length; i++) {
-          ringBuffer.push(input[i] * 8192); // Keep your 8192 volume scaling multiplier
+          ringBuffer.push(input[i] * 32768); // Keep your 8192 volume scaling multiplier
         }
 
         if (ringBuffer.length >= windowSizeSamples) {
