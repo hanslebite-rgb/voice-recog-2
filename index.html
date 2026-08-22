@@ -129,7 +129,7 @@
           const windowData = ringBuffer.slice(0, windowSizeSamples);
           
           // OPTIMIZATION 4: Slide forward by 1/4 of a window (evaluates 4x faster so words aren't cut in half)
-          ringBuffer = ringBuffer.slice(Math.floor(windowSizeSamples / 8));
+          ringBuffer = ringBuffer.slice(Math.floor(windowSizeSamples / 4));
           classifyWindow(windowData);
         }
       };
@@ -164,7 +164,7 @@
       const now = Date.now();
       
       // OPTIMIZATION 5: Debounce HTTP requests (Wait 1.5 seconds before allowing another command to hit the ESP32)
-      if (now - lastCommandTime < 1500) return; 
+      if (now - lastCommandTime < 2500) return; 
       
       let color = null, state = null;
       if (label === LABEL_BLUE_ON)        { color = "blue";   state = "on";  }
