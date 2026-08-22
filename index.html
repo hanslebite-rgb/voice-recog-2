@@ -29,10 +29,10 @@
     const CONFIDENCE_THRESHOLD = 0.80;
 
     // Must match your Edge Impulse class labels EXACTLY
-    const LABEL_BLUE_ON    = "blue_on";
-    const LABEL_BLUE_OFF   = "blue_off";
-    const LABEL_YELLOW_ON  = "yellow_on";
-    const LABEL_YELLOW_OFF = "yellow_off";
+    const LABEL_BLUE_ON    = "blue on";
+    const LABEL_BLUE_OFF   = "blue off";
+    const LABEL_YELLOW_ON  = "yellow on";
+    const LABEL_YELLOW_OFF = "yellow off";
 
     let classifier;
     let windowSizeSamples; // filled in once classifier is loaded
@@ -159,7 +159,7 @@
         if (r.value > best.value) best = r;
       }
 
-      log(`Scores: ${result.results.map(r => r.label + ":" + r.value.toFixed(2)).join(" ")}`);
+      //log(`Scores: ${result.results.map(r => r.label + ":" + r.value.toFixed(2)).join(" ")}`);
 
       if (best.value >= CONFIDENCE_THRESHOLD) {
         statusEl.textContent = `Heard: ${best.label} (${best.value.toFixed(2)})`;
