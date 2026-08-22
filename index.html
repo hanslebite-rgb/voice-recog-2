@@ -1,99 +1,195 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <meta charset="utf-8">
-    <title>Voice Controlled ESP32 via Blynk</title>
-    <style>
-        body { font-family: sans-serif; padding: 20px; max-width: 600px; margin: auto; }
-        button { padding: 15px 30px; font-size: 18px; cursor: pointer; margin-bottom: 20px; }
-        #status { font-weight: bold; color: blue; }
-        #results { font-family: monospace; white-space: pre; background: #eee; padding: 10px; }
-    </style>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Voice LED Control</title>
+  <style>
+    body { font-family: sans-serif; text-align: center; padding: 30px; background: #111; color: #eee; }
+    button { font-size: 18px; padding: 12px 24px; border-radius: 8px; border: none; background: #2a7; color: white; }
+    #log { text-align: left; max-width: 500px; margin: 20px auto; font-family: monospace; font-size: 13px;
+           background: #000; padding: 12px; border-radius: 8px; height: 200px; overflow-y: auto; }
+    #status { font-size: 20px; margin: 15px; }
+  </style>
 </head>
 <body>
-    <h1 id="model-info">Loading Model...</h1>
-    
-    <button id="start-btn">Start Listening</button>
-    <p>Status: <span id="status">Waiting to start...</span></p>
-    <p id="results">Predictions will appear here</p>
+  <h2>Voice LED Control</h2>
+  <p>ESP32 IP: <input id="esp32ip" value="192.168.1.42" style="font-size:16px; padding:6px;"></p>
+  <button id="startBtn">Start Listening</button>
+  <div id="status">Idle</div>
+  <div id="log"></div>
 
-    <!-- Make sure these files are pushed to your GitHub repo too -->
-    <script src="edge-impulse-standalone.js"></script>
-    <script src="run-impulse.js"></script>
-    
-    <script>
-        let audioContext;
-        let processor;
-        let classifier;
-        let audioBuffer = [];
-        let isClassifying = false;
+  <!-- These files come from Edge Impulse: Deployment -> WebAssembly -> Build -->
+  <script src="edge-impulse-standalone.js"></script>
+  <script src="run-impulse.js"></script>
 
-        // --- BLYNK CONFIGURATION ---
-        const BLYNK_TOKEN = "YOUR_BLYNK_AUTH_TOKEN"; 
-        const BLYNK_URL = `https://blynk.cloud/external/api/update?token=${BLYNK_TOKEN}&v1=`;
+  <script>
+    // ---- CONFIG: must match what you used when training ----
+    const SAMPLE_RATE_HZ = 8000;         // same value used in your ESP32 sketches
+    const CONFIDENCE_THRESHOLD = 0.80;
 
-        document.getElementById('start-btn').onclick = async () => {
-            const startBtn = document.getElementById('start-btn');
-            const statusText = document.getElementById('status');
-            
-            try {
-                startBtn.disabled = true;
-                statusText.textContent = "Initializing model and microphone...";
+    // Must match your Edge Impulse class labels EXACTLY
+    const LABEL_BLUE_ON    = "blue_on";
+    const LABEL_BLUE_OFF   = "blue_off";
+    const LABEL_YELLOW_ON  = "yellow_on";
+    const LABEL_YELLOW_OFF = "yellow_off";
 
-                if (!classifier) {
-                    classifier = new EdgeImpulseClassifier();
-                    await classifier.init();
-                    let project = classifier.getProjectInfo();
-                    document.getElementById('model-info').textContent = `${project.owner} / ${project.name}`;
-                }
+    let classifier;
+    let windowSizeSamples; // filled in once classifier is loaded
+    let audioCtx, micStream, processorNode;
+    let ringBuffer = [];
 
-                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-                audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
-                const source = audioContext.createMediaStreamSource(stream);
-                
-                processor = audioContext.createScriptProcessor(4096, 1, 1);
-                source.connect(processor);
-                processor.connect(audioContext.destination);
-                
-                statusText.textContent = "Listening...";
-                statusText.style.color = "green";
+    const logEl = document.getElementById('log');
+    const statusEl = document.getElementById('status');
 
-                processor.onaudioprocess = async (e) => {
-                    if (isClassifying) return;
-                    
-                    const inputData = e.inputBuffer.getChannelData(0);
-                    for (let i = 0; i < inputData.length; i++) audioBuffer.push(inputData[i]);
-                    
-                    let windowSize = classifier.getProperties().input_features_count; 
-                    
-                    if (audioBuffer.length >= windowSize) {
-                        isClassifying = true;
-                        let features = audioBuffer.slice(0, windowSize);
-                        audioBuffer = audioBuffer.slice(inputData.length); 
-                        
-                        let res = classifier.classify(features);
-                        let topResult = res.results.reduce((max, current) => (current.value > max.value) ? current : max);
-                        
-                        document.getElementById('results').textContent = `Heard: ${topResult.label} \nConfidence: ${(topResult.value * 100).toFixed(1)}%`;
+    function log(msg) {
+      console.log(msg);
+      logEl.innerHTML += msg + "<br>";
+      logEl.scrollTop = logEl.scrollHeight;
+    }
 
-                        // Trigger Blynk via REST API
-                        if (topResult.value > 0.8) {
-                            if (topResult.label === "led_on") {
-                                fetch(BLYNK_URL + '1').catch(err => console.error("Blynk Error:", err));
-                            } else if (topResult.label === "led_off") {
-                                fetch(BLYNK_URL + '0').catch(err => console.error("Blynk Error:", err));
-                            }
-                        }
-                        isClassifying = false;
-                    }
-                };
-            } catch (err) {
-                console.error(err);
-                statusText.textContent = "Error: " + err.message;
-                statusText.style.color = "red";
-                startBtn.disabled = false;
-            }
+    // Show any error directly on the page -- critical for debugging on
+    // a phone where you can't easily open dev tools.
+    window.addEventListener('error', (e) => {
+      log("JS ERROR: " + e.message + " (" + e.filename + ":" + e.lineno + ")");
+    });
+    window.addEventListener('unhandledrejection', (e) => {
+      log("PROMISE ERROR: " + (e.reason && e.reason.message ? e.reason.message : e.reason));
+    });
+
+    // The WASM module can take a moment to finish initializing after the
+    // page loads. Also, depending on the build, the class may be exposed
+    // as a bare global (EdgeImpulseClassifier) OR as a property of the
+    // Emscripten Module object (Module.EdgeImpulseClassifier). Check both.
+    function getClassifierClass() {
+      if (typeof EdgeImpulseClassifier !== 'undefined') return EdgeImpulseClassifier;
+      if (typeof Module !== 'undefined' && Module.EdgeImpulseClassifier) return Module.EdgeImpulseClassifier;
+      if (typeof window.Module !== 'undefined' && window.Module.EdgeImpulseClassifier) return window.Module.EdgeImpulseClassifier;
+      return null;
+    }
+
+    function waitForClassifierReady(timeoutMs = 8000) {
+      return new Promise((resolve, reject) => {
+        const start = Date.now();
+        const check = () => {
+          const cls = getClassifierClass();
+          if (cls) {
+            resolve(cls);
+          } else if (Date.now() - start > timeoutMs) {
+            reject(new Error('Timed out waiting for EdgeImpulseClassifier to load'));
+          } else {
+            setTimeout(check, 100);
+          }
         };
-    </script>
+        check();
+      });
+    }
+
+    async function initClassifier() {
+      log("Waiting for model to finish loading...");
+      const ClassifierClass = await waitForClassifierReady();
+      log("Found classifier class, initializing...");
+      classifier = new ClassifierClass();
+      await classifier.init();
+      const props = classifier.getProperties();
+      log("Model loaded. Properties: " + JSON.stringify(props));
+      // props typically includes input feature count / frame size for the model's window
+      windowSizeSamples = props.input_features_count || (SAMPLE_RATE_HZ * 1); // fallback: 1s window
+    }
+
+    // Simple linear-interpolation resampler: browser mic is usually 44100/48000Hz,
+    // model expects SAMPLE_RATE_HZ (e.g. 8000Hz)
+    function resample(buffer, fromRate, toRate) {
+      const ratio = fromRate / toRate;
+      const outLength = Math.floor(buffer.length / ratio);
+      const result = new Float32Array(outLength);
+      for (let i = 0; i < outLength; i++) {
+        result[i] = buffer[Math.floor(i * ratio)];
+      }
+      return result;
+    }
+
+    async function startListening() {
+      await initClassifier();
+
+      micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      const source = audioCtx.createMediaStreamSource(micStream);
+
+      // ScriptProcessorNode is deprecated but simplest/most compatible for this use case
+      processorNode = audioCtx.createScriptProcessor(4096, 1, 1);
+      source.connect(processorNode);
+      processorNode.connect(audioCtx.destination);
+
+      processorNode.onaudioprocess = (e) => {
+        const input = e.inputBuffer.getChannelData(0);
+        const resampled = resample(input, audioCtx.sampleRate, SAMPLE_RATE_HZ);
+
+        // Convert float [-1,1] audio to int16-ish range, matching how the
+        // ESP32 sketches center raw ADC samples around 0
+        for (let i = 0; i < resampled.length; i++) {
+          ringBuffer.push(resampled[i] * 32768);
+        }
+
+        if (ringBuffer.length >= windowSizeSamples) {
+          const windowData = ringBuffer.slice(0, windowSizeSamples);
+          // Slide forward by half a window so we don't miss words at boundaries
+          ringBuffer = ringBuffer.slice(Math.floor(windowSizeSamples / 2));
+          classifyWindow(windowData);
+        }
+      };
+
+      statusEl.textContent = "Listening...";
+      log("Mic active. Say a command.");
+    }
+
+    function classifyWindow(windowData) {
+      let result;
+      try {
+        result = classifier.classify(windowData, false);
+      } catch (err) {
+        log("Classify error: " + err);
+        return;
+      }
+
+      if (!result || !result.results) return;
+
+      let best = { label: "", value: 0 };
+      for (const r of result.results) {
+        if (r.value > best.value) best = r;
+      }
+
+      log(`Scores: ${result.results.map(r => r.label + ":" + r.value.toFixed(2)).join(" ")}`);
+
+      if (best.value >= CONFIDENCE_THRESHOLD) {
+        statusEl.textContent = `Heard: ${best.label} (${best.value.toFixed(2)})`;
+        handleCommand(best.label);
+      }
+    }
+
+    function handleCommand(label) {
+      let color = null, state = null;
+      if (label === LABEL_BLUE_ON)        { color = "blue";   state = "on";  }
+      else if (label === LABEL_BLUE_OFF)  { color = "blue";   state = "off"; }
+      else if (label === LABEL_YELLOW_ON) { color = "yellow"; state = "on";  }
+      else if (label === LABEL_YELLOW_OFF){ color = "yellow"; state = "off"; }
+      if (!color) return; // background_noise / unknown -> ignore
+
+      const ip = document.getElementById('esp32ip').value.trim();
+      fetch(`http://${ip}/led?color=${color}&state=${state}`)
+        .then(r => r.text())
+        .then(t => log("ESP32 responded: " + t))
+        .catch(err => log("ESP32 request failed: " + err));
+    }
+
+    document.getElementById('startBtn').addEventListener('click', async () => {
+      log("Button clicked, starting...");
+      try {
+        await startListening();
+      } catch (err) {
+        log("STARTUP ERROR: " + (err.message || err));
+      }
+    });
+  </script>
 </body>
 </html>
