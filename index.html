@@ -128,7 +128,7 @@
         // Convert float [-1,1] audio to int16-ish range, matching how the
         // ESP32 sketches center raw ADC samples around 0
         for (let i = 0; i < resampled.length; i++) {
-          ringBuffer.push(resampled[i] * 32768);
+          ringBuffer.push(resampled[i] * 2048);
         }
 
         if (ringBuffer.length >= windowSizeSamples) {
