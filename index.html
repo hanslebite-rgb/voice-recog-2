@@ -107,10 +107,13 @@
       });
       
       // OPTIMIZATION 3: Force the browser's audio engine to do native, high-quality resampling
-      audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: SAMPLE_RATE_HZ });
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)({ 
+        sampleRate: SAMPLE_RATE_HZ,
+        latencyHint: 'interactive' 
+      });
       const source = audioCtx.createMediaStreamSource(micStream);
 
-      processorNode = audioCtx.createScriptProcessor(4096, 1, 1);
+      processorNode = audioCtx.createScriptProcessor(1024, 1, 1);
       source.connect(processorNode);
       processorNode.connect(audioCtx.destination);
 
@@ -126,7 +129,7 @@
           const windowData = ringBuffer.slice(0, windowSizeSamples);
           
           // OPTIMIZATION 4: Slide forward by 1/4 of a window (evaluates 4x faster so words aren't cut in half)
-          ringBuffer = ringBuffer.slice(Math.floor(windowSizeSamples / 4));
+          ringBuffer = ringBuffer.slice(Math.floor(windowSizeSamples / 8));
           classifyWindow(windowData);
         }
       };
