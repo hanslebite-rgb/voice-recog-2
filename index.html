@@ -112,7 +112,13 @@
     async function startListening() {
       await initClassifier();
 
-      micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      micStream = await navigator.mediaDevices.getUserMedia({ 
+        audio: {
+          echoCancellation: false,
+          noiseSuppression: false,
+          autoGainControl: false
+        } 
+      });
       audioCtx = new (window.AudioContext || window.webkitAudioContext)();
       const source = audioCtx.createMediaStreamSource(micStream);
 
@@ -128,7 +134,7 @@
         // Convert float [-1,1] audio to int16-ish range, matching how the
         // ESP32 sketches center raw ADC samples around 0
         for (let i = 0; i < resampled.length; i++) {
-          ringBuffer.push(resampled[i] * 2048);
+          ringBuffer.push(resampled[i] * 8192);
         }
 
         if (ringBuffer.length >= windowSizeSamples) {
