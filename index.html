@@ -26,7 +26,9 @@
   <script>
     // ---- CONFIG: must match what you used when training ----
     const SAMPLE_RATE_HZ = 8000;         // same value used in your ESP32 sketches
-    const CONFIDENCE_THRESHOLD = 0.80;
+    
+    // OPTIMIZATION 1: Lower the threshold slightly to 70% to account for phone mic variance
+    const CONFIDENCE_THRESHOLD = 0.70;
 
     // Must match your Edge Impulse class labels EXACTLY
     const LABEL_BLUE_ON    = "blue on";
@@ -38,6 +40,9 @@
     let windowSizeSamples; // filled in once classifier is loaded
     let audioCtx, micStream, processorNode;
     let ringBuffer = [];
+    
+    // OPTIMIZATION 2: Track the last time a command was triggered
+    let lastCommandTime = 0; 
 
     const logEl = document.getElementById('log');
     const statusEl = document.getElementById('status');
@@ -48,8 +53,6 @@
       logEl.scrollTop = logEl.scrollHeight;
     }
 
-    // Show any error directly on the page -- critical for debugging on
-    // a phone where you can't easily open dev tools.
     window.addEventListener('error', (e) => {
       log("JS ERROR: " + e.message + " (" + e.filename + ":" + e.lineno + ")");
     });
@@ -57,10 +60,6 @@
       log("PROMISE ERROR: " + (e.reason && e.reason.message ? e.reason.message : e.reason));
     });
 
-    // The WASM module can take a moment to finish initializing after the
-    // page loads. Also, depending on the build, the class may be exposed
-    // as a bare global (EdgeImpulseClassifier) OR as a property of the
-    // Emscripten Module object (Module.EdgeImpulseClassifier). Check both.
     function getClassifierClass() {
       if (typeof EdgeImpulseClassifier !== 'undefined') return EdgeImpulseClassifier;
       if (typeof Module !== 'undefined' && Module.EdgeImpulseClassifier) return Module.EdgeImpulseClassifier;
@@ -93,20 +92,7 @@
       await classifier.init();
       const props = classifier.getProperties();
       log("Model loaded. Properties: " + JSON.stringify(props));
-      // props typically includes input feature count / frame size for the model's window
-      windowSizeSamples = props.input_features_count || (SAMPLE_RATE_HZ * 1); // fallback: 1s window
-    }
-
-    // Simple linear-interpolation resampler: browser mic is usually 44100/48000Hz,
-    // model expects SAMPLE_RATE_HZ (e.g. 8000Hz)
-    function resample(buffer, fromRate, toRate) {
-      const ratio = fromRate / toRate;
-      const outLength = Math.floor(buffer.length / ratio);
-      const result = new Float32Array(outLength);
-      for (let i = 0; i < outLength; i++) {
-        result[i] = buffer[Math.floor(i * ratio)];
-      }
-      return result;
+      windowSizeSamples = props.input_features_count || (SAMPLE_RATE_HZ * 1);
     }
 
     async function startListening() {
@@ -119,28 +105,28 @@
           autoGainControl: false
         } 
       });
-      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      
+      // OPTIMIZATION 3: Force the browser's audio engine to do native, high-quality resampling
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: SAMPLE_RATE_HZ });
       const source = audioCtx.createMediaStreamSource(micStream);
 
-      // ScriptProcessorNode is deprecated but simplest/most compatible for this use case
       processorNode = audioCtx.createScriptProcessor(4096, 1, 1);
       source.connect(processorNode);
       processorNode.connect(audioCtx.destination);
 
       processorNode.onaudioprocess = (e) => {
         const input = e.inputBuffer.getChannelData(0);
-        const resampled = resample(input, audioCtx.sampleRate, SAMPLE_RATE_HZ);
 
-        // Convert float [-1,1] audio to int16-ish range, matching how the
-        // ESP32 sketches center raw ADC samples around 0
-        for (let i = 0; i < resampled.length; i++) {
-          ringBuffer.push(resampled[i] * 8192);
+        // We completely removed the custom resampler. The browser now handles it natively.
+        for (let i = 0; i < input.length; i++) {
+          ringBuffer.push(input[i] * 8192); // Keep your 8192 volume scaling multiplier
         }
 
         if (ringBuffer.length >= windowSizeSamples) {
           const windowData = ringBuffer.slice(0, windowSizeSamples);
-          // Slide forward by half a window so we don't miss words at boundaries
-          ringBuffer = ringBuffer.slice(Math.floor(windowSizeSamples / 2));
+          
+          // OPTIMIZATION 4: Slide forward by 1/4 of a window (evaluates 4x faster so words aren't cut in half)
+          ringBuffer = ringBuffer.slice(Math.floor(windowSizeSamples / 4));
           classifyWindow(windowData);
         }
       };
@@ -165,8 +151,6 @@
         if (r.value > best.value) best = r;
       }
 
-      //log(`Scores: ${result.results.map(r => r.label + ":" + r.value.toFixed(2)).join(" ")}`);
-
       if (best.value >= CONFIDENCE_THRESHOLD) {
         statusEl.textContent = `Heard: ${best.label} (${best.value.toFixed(2)})`;
         handleCommand(best.label);
@@ -174,12 +158,20 @@
     }
 
     function handleCommand(label) {
+      const now = Date.now();
+      
+      // OPTIMIZATION 5: Debounce HTTP requests (Wait 1.5 seconds before allowing another command to hit the ESP32)
+      if (now - lastCommandTime < 1500) return; 
+      
       let color = null, state = null;
       if (label === LABEL_BLUE_ON)        { color = "blue";   state = "on";  }
       else if (label === LABEL_BLUE_OFF)  { color = "blue";   state = "off"; }
       else if (label === LABEL_YELLOW_ON) { color = "yellow"; state = "on";  }
       else if (label === LABEL_YELLOW_OFF){ color = "yellow"; state = "off"; }
-      if (!color) return; // background_noise / unknown -> ignore
+      
+      if (!color) return;
+
+      lastCommandTime = now; // Log the time only if it was a valid color/state command
 
       const ip = document.getElementById('esp32ip').value.trim();
       fetch(`http://${ip}/led?color=${color}&state=${state}`)
