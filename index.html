@@ -129,7 +129,7 @@
           const windowData = ringBuffer.slice(0, windowSizeSamples);
           
           // OPTIMIZATION 4: Slide forward by 1/4 of a window (evaluates 4x faster so words aren't cut in half)
-          ringBuffer = ringBuffer.slice(Math.floor(windowSizeSamples / 4));
+          ringBuffer = ringBuffer.slice(Math.floor(windowSizeSamples / 8));
           classifyWindow(windowData);
         }
       };
