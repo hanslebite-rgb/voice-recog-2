@@ -31,6 +31,7 @@
     <script src="run-impulse.js"></script>
     <script>
         (async () => {
+            // Initialize the Edge Impulse classifier
             var classifier = new EdgeImpulseClassifier();
             await classifier.init();
 
@@ -39,9 +40,29 @@
 
             document.querySelector('#run-inference').onclick = () => {
                 try {
+                    // Extract features from the input box
                     let features = document.querySelector('#features').value.split(',').map(x => Number(x.trim()));
+                    
+                    // Run the classifier
                     let res = classifier.classify(features);
                     document.querySelector('#results').textContent = JSON.stringify(res, null, 4);
+
+                    // --- NEW ESP32 TRIGGER LOGIC ---
+                    
+                    // 1. Find the label with the highest confidence score
+                    let topResult = res.results.reduce((max, current) => (current.value > max.value) ? current : max);
+
+                    // 2. Send command to ESP32 if confidence is high enough (e.g., > 80%)
+                    let esp32_IP = "http://192.168.X.X"; // IMPORTANT: Replace with the IP from your Arduino Serial Monitor
+                    
+                    // Note: Update "led_on" and "led_off" to exactly match the class labels in your Edge Impulse project
+                    if (topResult.label === "led_on" && topResult.value > 0.8) {
+                        console.log("Triggering LED ON");
+                        fetch(`${esp32_IP}/on`).catch(err => console.error("Error reaching ESP32:", err));
+                    } else if (topResult.label === "led_off" && topResult.value > 0.8) {
+                        console.log("Triggering LED OFF");
+                        fetch(`${esp32_IP}/off`).catch(err => console.error("Error reaching ESP32:", err));
+                    }
                 }
                 catch (ex) {
                     alert('Failed to classify: ' + (ex.message || ex.toString()));
